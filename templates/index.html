@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Talk2MCP — Multi-Agent Console</title>
+  <link rel="stylesheet" href="/static/css/app.css" />
+</head>
+<body>
+  <div class="app-bg" aria-hidden="true"></div>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="logo-mark" aria-hidden="true">
+          <svg class="logo-svg" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect width="32" height="32" rx="8" fill="url(#logoGrad)"/>
+            <path d="M8 12h16M8 16h12M8 20h14" stroke="white" stroke-width="2" stroke-linecap="round"/>
+            <defs>
+              <linearGradient id="logoGrad" x1="4" y1="4" x2="28" y2="28" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#2563eb"/>
+                <stop offset="1" stop-color="#7c3aed"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+        <div class="topbar-brand">
+          <div class="topbar-title-row">
+            <h1>Talk2MCP</h1>
+            <span class="topbar-badge">Console</span>
+          </div>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <div id="cap-strip" class="cap-strip">
+          <span id="cap-api" class="cap-pill cap-unknown">API …</span>
+          <span id="cap-gmail" class="cap-pill cap-unknown">Gmail …</span>
+        </div>
+        <div id="status-badge" class="badge badge-success">
+          <span id="status-text"><span class="badge-dot"></span> Idle</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="layout">
+      <main class="main-col">
+        <section class="card agent-picker-card">
+          <div class="card-header">
+            <h2 class="card-title">Choose Agent</h2>
+            <p class="card-description">Select an MCP-backed agent to run</p>
+          </div>
+          <div class="card-content pt-0">
+            <div class="agent-grid" id="agent-grid">
+              <button type="button" class="agent-card agent-card-paint active" data-agent="paint" id="agent-paint">
+                <span class="agent-card-glow" aria-hidden="true"></span>
+                <span class="agent-icon-wrap agent-icon-paint">🎨</span>
+                <span class="agent-name">Paint MCP</span>
+                <span class="agent-desc">Draw a rectangle and write your question in Paint</span>
+                <span class="agent-tools">3 tools · Assignment</span>
+              </button>
+              <button type="button" class="agent-card agent-card-gmail" data-agent="gmail" id="agent-gmail">
+                <span class="agent-card-glow" aria-hidden="true"></span>
+                <span class="agent-icon-wrap agent-icon-gmail">✉️</span>
+                <span class="agent-name">Gmail MCP</span>
+                <span class="agent-desc">Let the LLM send email through Gmail MCP</span>
+                <span class="agent-tools">send-email · OAuth</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card card-grow">
+          <div class="card-header row-between">
+            <div>
+              <h2 class="card-title" id="form-title">Run Paint Agent</h2>
+              <p class="card-description" id="form-desc">Enter a question — the LLM draws it in Paint via MCP.</p>
+            </div>
+            <button type="button" class="btn-icon" id="help-shortcut" title="Open How to Use">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.25"/>
+                <path d="M8 7.2V11" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
+                <circle cx="8" cy="5.2" r="0.75" fill="currentColor"/>
+              </svg>
+            </button>
+          </div>
+          <div class="card-content">
+            <form id="run-form">
+              <div id="fields-paint" class="agent-fields">
+                <label class="label" for="question">Text to write inside Paint</label>
+                <p class="field-sublabel">
+                  Enter a <strong>question or phrase</strong> — the LLM calls the Paint MCP tools for you.
+                  Do <strong>not</strong> type commands like “open paint” or “draw rectangle”.
+                </p>
+                <textarea
+                  id="question"
+                  class="textarea textarea-lg"
+                  placeholder="What is the capital of France?"
+                ></textarea>
+                <div class="suggest-box">
+                  <span class="suggest-label">Quick fill</span>
+                  <div class="suggest-chips" id="paint-suggestions"></div>
+                </div>
+                <div class="suggest-warn" id="paint-warn" role="note">
+                  <strong>Tip:</strong> Ask a question like “What is MCP?” — not a command like “open paint draw S letter”.
+                </div>
+              </div>
+              <div id="fields-gmail" class="agent-fields hidden">
+                <label class="label" for="email-to">To</label>
+                <p class="field-sublabel">The LLM calls <code>send-email</code> via Gmail MCP — you never send manually.</p>
+                <input type="email" id="email-to" class="input" placeholder="you@gmail.com" />
+                <label class="label" for="email-subject">Subject</label>
+                <input type="text" id="email-subject" class="input" placeholder="MCP Gmail test" />
+                <label class="label" for="email-body">Message</label>
+                <textarea id="email-body" class="textarea" rows="4" placeholder="This email was sent by the LLM via MCP…"></textarea>
+                <div class="suggest-box">
+                  <span class="suggest-label">Quick fill — add your address in To</span>
+                  <div class="suggest-chips" id="gmail-suggestions"></div>
+                </div>
+              </div>
+              <div class="button-row">
+                <button type="submit" class="btn btn-primary btn-lg" id="run-btn">
+                  <span class="btn-icon-left">▶</span> Run Live
+                </button>
+                <button type="button" class="btn btn-outline btn-lg" id="dry-btn">
+                  <span class="btn-icon-left">⚡</span> Dry Run
+                </button>
+              </div>
+              <p class="hint-inline" id="run-hint">
+                <strong>Run Live</strong> = real LLM + MCP &nbsp;·&nbsp;
+                <strong>Dry Run</strong> = simulate tool calls only
+              </p>
+            </form>
+            <div id="msg" class="alert alert-hidden" role="status"></div>
+          </div>
+        </section>
+
+        <section class="card card-grow output-card">
+          <div class="card-header row-between">
+            <div>
+              <h2 class="card-title">Agent Output</h2>
+              <p class="card-description">Live transcript — tool calls and MCP responses</p>
+            </div>
+            <button type="button" class="btn btn-ghost btn-sm" id="clear-output">Clear</button>
+          </div>
+          <div class="card-content pt-0">
+            <div id="output-error" class="output-error hidden" role="alert"></div>
+            <div class="output-wrap">
+              <div class="output-toolbar">
+                <span class="output-dot output-dot-red"></span>
+                <span class="output-dot output-dot-yellow"></span>
+                <span class="output-dot output-dot-green"></span>
+                <span class="output-toolbar-label">transcript</span>
+              </div>
+              <pre id="output" class="output output-lg waiting"></pre>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-header row-between">
+            <div>
+              <h2 class="card-title">Run History</h2>
+              <p class="card-description">Session activity — newest first</p>
+            </div>
+            <span class="badge badge-muted" id="history-count">0 runs</span>
+          </div>
+          <div class="card-content pt-0">
+            <div class="history-table-wrap">
+              <table class="history-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Agent</th>
+                    <th>Time</th>
+                    <th>Mode</th>
+                    <th>Summary</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="history-body">
+                  <tr class="empty-row"><td colspan="6">No runs yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <aside class="sidebar">
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="tools" role="tab">Tools</button>
+          <button class="tab" data-tab="tests" role="tab">Tests</button>
+          <button class="tab" data-tab="logs" role="tab">Logs</button>
+          <button class="tab" data-tab="features" role="tab">Features</button>
+          <button class="tab" data-tab="guide" role="tab">Guide</button>
+        </div>
+
+        <div class="tab-panel active" id="panel-tools">
+          <div class="card sidebar-card">
+            <div class="card-header">
+              <h2 class="card-title" id="tools-title">Paint MCP Tools</h2>
+              <p class="card-description" id="tools-desc">LLM must call in this order</p>
+            </div>
+            <div class="card-content pt-0">
+              <ol class="steps" id="tools-list"></ol>
+              <div class="separator"></div>
+              <ul class="meta-list" id="tools-meta"></ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="panel-tests">
+          <div class="card sidebar-card">
+            <div class="card-header row-between">
+              <div>
+                <h2 class="card-title">Test Cases</h2>
+                <p class="card-description">For active agent — click Live or Dry</p>
+              </div>
+              <span class="badge badge-muted" id="tests-agent-badge">paint</span>
+            </div>
+            <div class="card-content pt-0">
+              <div id="test-cases-list" class="test-cases-list">
+                <p class="muted-text">Loading…</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="panel-logs">
+          <div class="card sidebar-card">
+            <div class="card-header">
+              <h2 class="card-title">Live Logs</h2>
+              <p class="card-description">Tail log files from disk</p>
+            </div>
+            <div class="card-content pt-0 logs-panel">
+              <label class="label" for="log-filter">Show</label>
+              <select id="log-filter" class="input input-sm">
+                <option value="all">All logs</option>
+                <option value="paint">Paint only</option>
+                <option value="gmail">Gmail only</option>
+              </select>
+              <label class="label" for="log-lines">Lines</label>
+              <input type="range" id="log-lines" min="50" max="500" step="50" value="200" />
+              <span class="log-lines-val" id="log-lines-val">200</span>
+              <div id="log-blocks"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="panel-features">
+          <div class="card sidebar-card">
+            <div class="card-header">
+              <h2 class="card-title">Features &amp; Submission</h2>
+              <p class="card-description">Demo video + GitHub checklist</p>
+            </div>
+            <div class="card-content pt-0 guide-content">
+              <div class="compare-box compare-ready">
+                <h3>✓ Assignment ready</h3>
+                <ul>
+                  <li>Live Paint run with all 3 tools</li>
+                  <li>Logs show <code>LLM chose tool:</code></li>
+                  <li>Submit <code>talk2mcp.py</code> on GitHub</li>
+                </ul>
+              </div>
+              <div class="compare-box compare-bonus">
+                <h3>✉️ Gmail MCP</h3>
+                <p class="feature-ref">
+                  <a href="https://medium.com/@jason.summer/create-a-gmail-agent-with-model-context-protocol-mcp-061059c07777" target="_blank" rel="noopener">Medium guide</a>
+                  · <a href="https://github.com/jasonsum/gmail-mcp-server" target="_blank" rel="noopener">GitHub repo</a>
+                </p>
+                <p class="compare-note">Configure <code>.env</code> → switch to Gmail agent → Run Live</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="panel-guide">
+          <div class="card sidebar-card">
+            <div class="card-header">
+              <h2 class="card-title">How to Use</h2>
+              <p class="card-description">Multi-agent console</p>
+            </div>
+            <div class="card-content pt-0 guide-content">
+              <div class="compare-box compare-live">
+                <h3>▶ Run Live</h3>
+                <ul>
+                  <li>Calls the configured LLM</li>
+                  <li>LLM chooses MCP tools — you never call them manually</li>
+                  <li>Paint: opens real Paint (WSL: via PNG)</li>
+                  <li>Gmail: sends real email (needs OAuth setup)</li>
+                </ul>
+              </div>
+              <div class="compare-box compare-dry">
+                <h3>⚡ Dry Run</h3>
+                <ul>
+                  <li>No API · no Paint · no Gmail</li>
+                  <li>Simulates tool calls for UI/log testing</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <footer class="footer-note">
+      <span>Talk2MCP</span>
+      <span class="footer-sep">·</span>
+      <span class="footer-muted">Model Context Protocol</span>
+    </footer>
+  </div>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

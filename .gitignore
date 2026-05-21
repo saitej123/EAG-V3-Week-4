@@ -1,0 +1,30 @@
+.env
+.env.example
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.DS_Store
+
+# Course reference material (local only, not part of submission)
+Reference_codes/
+
+# Runtime (regenerated on each run)
+logs/*.log
+output/*.png
+
+# Keep empty folders in git
+!logs/.gitkeep
+!output/.gitkeep
+
+# Gmail OAuth (bonus — never commit)
+client_creds.json
+*_creds.json
+app_tokens.json
+*_tokens.json
+.google/
