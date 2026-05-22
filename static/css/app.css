@@ -142,6 +142,7 @@ h1 {
 
 .cap-ok { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
 .cap-bad { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+.cap-warn { background: #fffbeb; color: #b45309; border-color: #fde68a; }
 .cap-unknown { background: var(--muted); color: var(--muted-foreground); }
 
 /* ── Layout ── */

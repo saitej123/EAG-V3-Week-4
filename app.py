@@ -7,10 +7,11 @@ Run:
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -153,11 +154,71 @@ class RunResponse(BaseModel):
     agent: str
 
 
-def is_gmail_configured() -> bool:
-    return all(
-        os.getenv(key, "").strip()
-        for key in ("GMAIL_MCP_REPO", "GMAIL_CREDS_FILE", "GMAIL_TOKEN_FILE")
+def _read_json_file(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def gmail_setup_status() -> dict[str, Any]:
+    repo = os.getenv("GMAIL_MCP_REPO", "").strip()
+    creds = os.getenv("GMAIL_CREDS_FILE", "").strip()
+    token = os.getenv("GMAIL_TOKEN_FILE", "").strip()
+    env_ok = bool(repo and creds and token)
+
+    creds_path = Path(creds).expanduser() if creds else None
+    token_path = Path(token).expanduser() if token else None
+    repo_path = Path(repo).expanduser() if repo else None
+
+    creds_data = _read_json_file(creds_path) if creds_path else None
+    creds_ok = bool(creds_data and ("installed" in creds_data or "web" in creds_data))
+
+    token_data = _read_json_file(token_path) if token_path else None
+    token_ok = bool(
+        token_data and (token_data.get("token") or token_data.get("refresh_token"))
     )
+
+    repo_ok = bool(repo_path and repo_path.exists())
+
+    ready = env_ok and creds_ok and token_ok and repo_ok
+
+    if not env_ok:
+        message = (
+            "Set GMAIL_MCP_REPO, GMAIL_CREDS_FILE, and GMAIL_TOKEN_FILE in .env"
+        )
+    elif not repo_ok:
+        message = f"GMAIL_MCP_REPO not found: {repo}"
+    elif not creds_ok:
+        message = (
+            "Invalid client_creds.json — download OAuth Desktop app JSON from Google Cloud"
+        )
+    elif not token_ok:
+        message = (
+            "OAuth token missing — run: python scripts/gmail_oauth_setup.py "
+            "(use GMAIL_OAUTH_MODE=manual on WSL)"
+        )
+    else:
+        message = "Gmail MCP ready"
+
+    return {
+        "env_ok": env_ok,
+        "creds_ok": creds_ok,
+        "token_ok": token_ok,
+        "repo_ok": repo_ok,
+        "ready": ready,
+        "message": message,
+    }
+
+
+def is_gmail_configured() -> bool:
+    return gmail_setup_status()["ready"]
 
 
 def _api_key_valid() -> bool:
@@ -301,6 +362,7 @@ async def agents() -> JSONResponse:
             "agents": items,
             "api_key_valid": _api_key_valid(),
             "model": os.getenv("GEMINI_MODEL", "gemini-3.5-flash"),
+            "gmail_setup": gmail_setup_status(),
         }
     )
 
@@ -357,6 +419,7 @@ async def status() -> JSONResponse:
             "run_history": _state["run_history"],
             "api_key_valid": _api_key_valid(),
             "gmail_configured": is_gmail_configured(),
+            "gmail_setup": gmail_setup_status(),
         }
     )
 
@@ -375,14 +438,10 @@ async def run_agent_job(body: RunRequest, background: BackgroundTasks) -> RunRes
             detail="Set a valid GEMINI_API_KEY in .env before a live run.",
         )
 
-    if body.agent == "gmail" and not body.dry_run and not is_gmail_configured():
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Gmail MCP not configured. Set GMAIL_MCP_REPO, GMAIL_CREDS_FILE, "
-                "and GMAIL_TOKEN_FILE in .env (see Features tab)."
-            ),
-        )
+    if body.agent == "gmail" and not body.dry_run:
+        gmail_status = gmail_setup_status()
+        if not gmail_status["ready"]:
+            raise HTTPException(status_code=400, detail=gmail_status["message"])
 
     if body.agent == "paint":
         preview = body.question.strip()

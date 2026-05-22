@@ -140,9 +140,9 @@ def test_run_live_rejects_placeholder_api_key(monkeypatch):
 
 def test_run_gmail_live_requires_config(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "AIzaSyValidLookingKey123")
-    monkeypatch.delenv("GMAIL_MCP_REPO", raising=False)
-    monkeypatch.delenv("GMAIL_CREDS_FILE", raising=False)
-    monkeypatch.delenv("GMAIL_TOKEN_FILE", raising=False)
+    monkeypatch.setenv("GMAIL_MCP_REPO", "/tmp/fake-gmail-mcp")
+    monkeypatch.setenv("GMAIL_CREDS_FILE", "/tmp/fake-creds.json")
+    monkeypatch.setenv("GMAIL_TOKEN_FILE", "/tmp/fake-token.json")
     res = client.post(
         "/api/run",
         json={
@@ -154,4 +154,40 @@ def test_run_gmail_live_requires_config(monkeypatch):
         },
     )
     assert res.status_code == 400
-    assert "Gmail MCP" in res.json()["detail"]
+    detail = res.json()["detail"]
+    assert any(
+        phrase in detail
+        for phrase in ("OAuth token", "Gmail", "GMAIL_MCP_REPO", "client_creds")
+    )
+
+
+def test_gmail_setup_status_detects_empty_token(tmp_path, monkeypatch):
+    from app import gmail_setup_status
+
+    creds = tmp_path / "client_creds.json"
+    token = tmp_path / "app_tokens.json"
+    creds.write_text(
+        '{"installed":{"client_id":"x","client_secret":"y","redirect_uris":["http://localhost"]}}',
+        encoding="utf-8",
+    )
+    token.write_text("", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    monkeypatch.setenv("GMAIL_MCP_REPO", str(repo))
+    monkeypatch.setenv("GMAIL_CREDS_FILE", str(creds))
+    monkeypatch.setenv("GMAIL_TOKEN_FILE", str(token))
+
+    status = gmail_setup_status()
+    assert status["creds_ok"] is True
+    assert status["token_ok"] is False
+    assert status["ready"] is False
+    assert "OAuth token" in status["message"]
+
+
+def test_agents_api_includes_gmail_setup():
+    res = client.get("/api/agents")
+    assert res.status_code == 200
+    data = res.json()
+    assert "gmail_setup" in data
+    assert "ready" in data["gmail_setup"]

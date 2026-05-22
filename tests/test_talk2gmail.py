@@ -25,8 +25,12 @@ def test_dry_run_gmail_calls_send_email():
     assert calls[0]["args"]["recipient_id"] == "test@example.com"
 
 
-def test_build_gmail_server_params_missing_env():
+def test_build_gmail_server_params_missing_env(monkeypatch):
     from talk2gmail import build_gmail_server_params
+
+    monkeypatch.delenv("GMAIL_MCP_REPO", raising=False)
+    monkeypatch.delenv("GMAIL_CREDS_FILE", raising=False)
+    monkeypatch.delenv("GMAIL_TOKEN_FILE", raising=False)
 
     with pytest.raises(RuntimeError, match="GMAIL_MCP_REPO"):
         build_gmail_server_params()

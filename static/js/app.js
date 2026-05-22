@@ -212,6 +212,24 @@
     el.className = 'cap-pill ' + (ok ? 'cap-ok' : 'cap-bad');
   }
 
+  function setGmailPill(setup) {
+    if (!capGmail) return;
+    if (!setup) {
+      setCapPill(capGmail, false, 'Gmail ✓', 'Gmail setup');
+      return;
+    }
+    if (setup.ready) {
+      setCapPill(capGmail, true, 'Gmail ✓', 'Gmail setup');
+      return;
+    }
+    if (setup.creds_ok && !setup.token_ok) {
+      capGmail.textContent = 'OAuth needed';
+      capGmail.className = 'cap-pill cap-warn';
+      return;
+    }
+    setCapPill(capGmail, false, 'Gmail ✓', 'Gmail setup');
+  }
+
   function initGmailSuggestions() {
     const container = document.getElementById('gmail-suggestions');
     if (!container) return;
@@ -249,6 +267,7 @@
     }
     renderToolsPanel();
     if (activeTab === 'tests') loadTestCases();
+    if (activeTab === 'logs') refreshLogs(true);
   }
 
   function selectAgent(agent) {
@@ -330,8 +349,10 @@
         agentsMeta[a.id] = a;
       });
       setCapPill(capApi, data.api_key_valid, 'API key ✓', 'API key ✗');
-      const gmail = agentsMeta.gmail;
-      setCapPill(capGmail, gmail && gmail.configured, 'Gmail ✓', 'Gmail setup');
+      setGmailPill(data.gmail_setup);
+      if (agentsMeta.gmail) {
+        agentsMeta.gmail.configured = !!(data.gmail_setup && data.gmail_setup.ready);
+      }
       renderToolsPanel();
     } catch {
       setCapPill(capApi, false, 'API …', 'API offline');
@@ -406,7 +427,18 @@
     output.classList.remove('waiting');
     const r = data.last_result;
     const lines = [];
-    lines.push('Agent: ' + (r.agent || data.last_agent || 'paint'));
+    const resultAgent = r.agent || data.last_agent || 'paint';
+    if (resultAgent !== currentAgent) {
+      lines.push(
+        '(Showing last ' +
+          resultAgent +
+          ' run — switch agent or run again to refresh for ' +
+          currentAgent +
+          ')'
+      );
+      lines.push('');
+    }
+    lines.push('Agent: ' + resultAgent);
     if (r.agent === 'gmail' || r.recipient) {
       lines.push('To: ' + (r.recipient || ''));
       lines.push('Subject: ' + (r.subject || ''));
@@ -644,7 +676,7 @@
           : null;
       setRunningUI(running, runningAgent);
       setCapPill(capApi, data.api_key_valid, 'API key ✓', 'API key ✗');
-      setCapPill(capGmail, data.gmail_configured, 'Gmail ✓', 'Gmail setup');
+      setGmailPill(data.gmail_setup || (data.gmail_configured ? { ready: true } : null));
       renderTranscript(data);
       renderHistory(data.run_history);
       if (activeTab === 'logs') refreshLogs(false);
