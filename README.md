@@ -13,9 +13,9 @@ Paint has no API and no MCP server. This project builds one, then lets **Gemini 
 
 ## YouTube demo
 
-[![Talk2MCP demo on YouTube](https://img.youtube.com/vi/Lf0_HDAvU0A/maxresdefault.jpg)](https://www.youtube.com/watch?v=Lf0_HDAvU0A)
+**Watch the full walkthrough:**  
 
-**Watch the full walkthrough:** [https://www.youtube.com/watch?v=Lf0_HDAvU0A](https://www.youtube.com/watch?v=Lf0_HDAvU0A)
+[https://www.youtube.com/watch?v=Lf0_HDAvU0A](https://www.youtube.com/watch?v=Lf0_HDAvU0A)
 
 Paint MCP (rectangle + text in MS Paint), Gmail MCP (LLM sends email via `send-email`), web UI, and live MCP logs — end to end.
 
