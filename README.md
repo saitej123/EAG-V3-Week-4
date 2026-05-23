@@ -11,6 +11,16 @@ Paint has no API and no MCP server. This project builds one, then lets **Gemini 
 
 ---
 
+## YouTube demo
+
+[![Talk2MCP demo on YouTube](https://img.youtube.com/vi/Lf0_HDAvU0A/maxresdefault.jpg)](https://www.youtube.com/watch?v=Lf0_HDAvU0A)
+
+**Watch the full walkthrough:** [https://www.youtube.com/watch?v=Lf0_HDAvU0A](https://www.youtube.com/watch?v=Lf0_HDAvU0A)
+
+Paint MCP (rectangle + text in MS Paint), Gmail MCP (LLM sends email via `send-email`), web UI, and live MCP logs — end to end.
+
+---
+
 ## Screenshots
 
 <table align="center" width="100%">
@@ -455,10 +465,11 @@ pytest tests/ -v
 
 ## Submission tips
 
-1. Run one successful **live** Paint demo: `python talk2mcp.py "What is the capital of France?"`
-2. Record Paint showing the rectangle and your question text
-3. Scroll `logs/talk2mcp.log` (or Web UI **Logs** tab) showing `LLM chose tool:` lines
-4. Optional: Gmail live demo + inbox screenshot
-5. Push to GitHub and submit the link to **`talk2mcp.py`**
+1. **Demo video:** [YouTube walkthrough](https://www.youtube.com/watch?v=Lf0_HDAvU0A)
+2. Run one successful **live** Paint demo: `python talk2mcp.py "What is the capital of France?"`
+3. Record Paint showing the rectangle and your question text
+4. Scroll `logs/talk2mcp.log` (or Web UI **Logs** tab) showing `LLM chose tool:` lines
+5. Optional: Gmail live demo + inbox screenshot
+6. Push to GitHub and submit the link to **`talk2mcp.py`**
 
 Include `paint_mcp_server.py` in the same repo — the agent starts it automatically at runtime.
