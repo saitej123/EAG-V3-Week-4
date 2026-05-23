@@ -7,11 +7,12 @@ Run:
 
 from __future__ import annotations
 
-import json
+import asyncio
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -19,12 +20,13 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel, Field, model_validator
 
-from talk2gmail import run_gmail_agent
+from talk2gmail import gmail_setup_status, is_gmail_configured, run_gmail_agent
 from talk2mcp import LOG_DIR, is_valid_api_key, run_agent
 
 HERE = Path(__file__).parent
 TEMPLATES = HERE / "templates"
 STATIC = HERE / "static"
+AGENT_JOB_TIMEOUT = int(os.getenv("AGENT_JOB_TIMEOUT", "180"))
 
 PAINT_TEST_CASES = [
     {
@@ -115,7 +117,29 @@ _state: dict = {
     "last_error": None,
     "run_history": [],
     "history_seq": 0,
+    "run_started_at": 0.0,
 }
+
+
+def _mark_running(agent: str) -> None:
+    _state["running"] = True
+    _state["running_agent"] = agent
+    _state["run_started_at"] = time.time()
+
+
+def _mark_idle() -> None:
+    _state["running"] = False
+    _state["running_agent"] = None
+    _state["run_started_at"] = 0.0
+
+
+def _recover_stale_run() -> None:
+    if not _state["running"]:
+        return
+    started = _state.get("run_started_at") or 0.0
+    if started and time.time() - started > AGENT_JOB_TIMEOUT + 30:
+        logger.warning("Stale run detected — forcing idle")
+        _mark_idle()
 
 
 class RunRequest(BaseModel):
@@ -154,73 +178,6 @@ class RunResponse(BaseModel):
     agent: str
 
 
-def _read_json_file(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    text = path.read_text(encoding="utf-8").strip()
-    if not text:
-        return None
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def gmail_setup_status() -> dict[str, Any]:
-    repo = os.getenv("GMAIL_MCP_REPO", "").strip()
-    creds = os.getenv("GMAIL_CREDS_FILE", "").strip()
-    token = os.getenv("GMAIL_TOKEN_FILE", "").strip()
-    env_ok = bool(repo and creds and token)
-
-    creds_path = Path(creds).expanduser() if creds else None
-    token_path = Path(token).expanduser() if token else None
-    repo_path = Path(repo).expanduser() if repo else None
-
-    creds_data = _read_json_file(creds_path) if creds_path else None
-    creds_ok = bool(creds_data and ("installed" in creds_data or "web" in creds_data))
-
-    token_data = _read_json_file(token_path) if token_path else None
-    token_ok = bool(
-        token_data and (token_data.get("token") or token_data.get("refresh_token"))
-    )
-
-    repo_ok = bool(repo_path and repo_path.exists())
-
-    ready = env_ok and creds_ok and token_ok and repo_ok
-
-    if not env_ok:
-        message = (
-            "Set GMAIL_MCP_REPO, GMAIL_CREDS_FILE, and GMAIL_TOKEN_FILE in .env"
-        )
-    elif not repo_ok:
-        message = f"GMAIL_MCP_REPO not found: {repo}"
-    elif not creds_ok:
-        message = (
-            "Invalid client_creds.json — download OAuth Desktop app JSON from Google Cloud"
-        )
-    elif not token_ok:
-        message = (
-            "OAuth token missing — run: python scripts/gmail_oauth_setup.py "
-            "(use GMAIL_OAUTH_MODE=manual on WSL)"
-        )
-    else:
-        message = "Gmail MCP ready"
-
-    return {
-        "env_ok": env_ok,
-        "creds_ok": creds_ok,
-        "token_ok": token_ok,
-        "repo_ok": repo_ok,
-        "ready": ready,
-        "message": message,
-    }
-
-
-def is_gmail_configured() -> bool:
-    return gmail_setup_status()["ready"]
-
-
 def _api_key_valid() -> bool:
     key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     return is_valid_api_key(key)
@@ -254,13 +211,14 @@ def _append_history(
 
 
 async def _run_paint_job(question: str, dry_run: bool) -> None:
-    _state["running"] = True
-    _state["running_agent"] = "paint"
     _state["last_agent"] = "paint"
     _state["last_label"] = question
     _state["last_error"] = None
     try:
-        result = await run_agent(question, dry_run=dry_run)
+        result = await asyncio.wait_for(
+            run_agent(question, dry_run=dry_run),
+            timeout=AGENT_JOB_TIMEOUT,
+        )
         result["agent"] = "paint"
         _state["last_result"] = result
         tools = ", ".join(result.get("tools_called") or [])
@@ -278,24 +236,29 @@ async def _run_paint_job(question: str, dry_run: bool) -> None:
             f"Tools: {tools or 'simulated'}" if not dry_run else "Simulated 3 tool calls",
         )
         logger.info("Paint job done question={!r} dry_run={}", question, dry_run)
+    except asyncio.TimeoutError:
+        _state["last_error"] = f"Paint agent timed out after {AGENT_JOB_TIMEOUT}s"
+        _state["last_result"] = None
+        _append_history("paint", question, dry_run, False, "timeout")
+        logger.error("Paint job timed out question={!r}", question)
     except Exception as exc:
         _state["last_error"] = str(exc)
         _state["last_result"] = None
         _append_history("paint", question, dry_run, False, str(exc))
         logger.exception("Paint job failed")
     finally:
-        _state["running"] = False
-        _state["running_agent"] = None
+        _mark_idle()
 
 
 async def _run_gmail_job(to: str, subject: str, body: str, dry_run: bool) -> None:
-    _state["running"] = True
-    _state["running_agent"] = "gmail"
     _state["last_agent"] = "gmail"
     _state["last_label"] = f"{to} — {subject}"
     _state["last_error"] = None
     try:
-        result = await run_gmail_agent(to, subject, body, dry_run=dry_run)
+        result = await asyncio.wait_for(
+            run_gmail_agent(to, subject, body, dry_run=dry_run),
+            timeout=AGENT_JOB_TIMEOUT,
+        )
         result["agent"] = "gmail"
         _state["last_result"] = result
         tools = ", ".join(result.get("tools_called") or [])
@@ -313,14 +276,18 @@ async def _run_gmail_job(to: str, subject: str, body: str, dry_run: bool) -> Non
             f"Tools: {tools or 'simulated'}" if not dry_run else "Simulated send-email",
         )
         logger.info("Gmail job done to={!r} dry_run={}", to, dry_run)
+    except asyncio.TimeoutError:
+        _state["last_error"] = f"Gmail agent timed out after {AGENT_JOB_TIMEOUT}s"
+        _state["last_result"] = None
+        _append_history("gmail", _state["last_label"], dry_run, False, "timeout")
+        logger.error("Gmail job timed out to={!r}", to)
     except Exception as exc:
         _state["last_error"] = str(exc)
         _state["last_result"] = None
         _append_history("gmail", _state["last_label"], dry_run, False, str(exc))
         logger.exception("Gmail job failed")
     finally:
-        _state["running"] = False
-        _state["running_agent"] = None
+        _mark_idle()
 
 
 def _tail_log(path: Path, lines: int = 250) -> str:
@@ -408,6 +375,7 @@ async def logs(lines: int = 250, agent: str = "all") -> JSONResponse:
 
 @app.get("/api/status")
 async def status() -> JSONResponse:
+    _recover_stale_run()
     return JSONResponse(
         {
             "running": _state["running"],
@@ -417,6 +385,7 @@ async def status() -> JSONResponse:
             "last_result": _state["last_result"],
             "last_error": _state["last_error"],
             "run_history": _state["run_history"],
+            "history_seq": _state["history_seq"],
             "api_key_valid": _api_key_valid(),
             "gmail_configured": is_gmail_configured(),
             "gmail_setup": gmail_setup_status(),
@@ -441,29 +410,29 @@ async def run_agent_job(body: RunRequest, background: BackgroundTasks) -> RunRes
     if body.agent == "gmail" and not body.dry_run:
         gmail_status = gmail_setup_status()
         if not gmail_status["ready"]:
-            raise HTTPException(status_code=400, detail=gmail_status["message"])
+            if gmail_status["creds_ok"] and not gmail_status["token_ok"]:
+                detail = "Gmail OAuth token missing — run: python talk2gmail.py --setup-oauth"
+            else:
+                detail = gmail_status["message"]
+            raise HTTPException(status_code=400, detail=detail)
 
+    agent = body.agent
     if body.agent == "paint":
         preview = body.question.strip()
         if len(preview) > 48:
             preview = preview[:45] + "…"
         if body.dry_run:
-            msg = (
-                f'Paint dry-run started. Simulating 3 MCP tools for: "{preview}". '
-                "Check Agent Output for the tool sequence."
-            )
+            msg = f'Paint dry-run started for: "{preview}".'
         else:
-            msg = (
-                f'Paint agent started. Gemini will call open_paint → draw_rectangle → '
-                f'add_text_in_paint with your text: "{preview}". '
-                "Watch Paint open and check the Logs tab for LLM chose tool: lines."
-            )
+            msg = f'Paint agent started — writing: "{preview}".'
+        _mark_running(agent)
         background.add_task(_run_paint_job, body.question.strip(), body.dry_run)
     else:
         if body.dry_run:
-            msg = "Gmail dry-run started — simulated send-email, no Gmail MCP or Gemini."
+            msg = "Gmail dry-run started."
         else:
-            msg = "Gmail agent started — Gemini will call send-email via MCP."
+            msg = "Gmail agent started."
+        _mark_running(agent)
         background.add_task(
             _run_gmail_job,
             body.to.strip(),

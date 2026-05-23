@@ -9,10 +9,7 @@
   const statusText = document.getElementById('status-text');
   const historyBody = document.getElementById('history-body');
   const historyCount = document.getElementById('history-count');
-  const testCasesList = document.getElementById('test-cases-list');
-  const testsAgentBadge = document.getElementById('tests-agent-badge');
   const clearOutputBtn = document.getElementById('clear-output');
-  const helpShortcut = document.getElementById('help-shortcut');
   const logLines = document.getElementById('log-lines');
   const logLinesVal = document.getElementById('log-lines-val');
   const logFilter = document.getElementById('log-filter');
@@ -23,51 +20,47 @@
   const formDesc = document.getElementById('form-desc');
   const fieldsPaint = document.getElementById('fields-paint');
   const fieldsGmail = document.getElementById('fields-gmail');
+  const paintSuggestionsWrap = document.getElementById('paint-suggestions-wrap');
+  const paintSuggestions = document.getElementById('paint-suggestions');
   const toolsTitle = document.getElementById('tools-title');
   const toolsDesc = document.getElementById('tools-desc');
   const toolsList = document.getElementById('tools-list');
-  const toolsMeta = document.getElementById('tools-meta');
+  const outputWrap = document.getElementById('output-wrap');
   const agentGrid = document.getElementById('agent-grid');
 
   let pollTimers = [];
   let statusInFlight = false;
   let localRunning = false;
   let runBaseline = null;
+  let runStartedAt = 0;
   let activeTab = 'tools';
   let currentAgent = 'paint';
   let agentsMeta = {};
   let statusSnapshot = null;
   let logsLayoutKey = '';
-
-  const PAINT_SUGGESTIONS = [
-    'What is the capital of France?',
-    'What is MCP?',
-    'How does an LLM agent work?',
-    'What is the speed of light?',
-    'Can Paint be controlled without an API?',
-  ];
-
-  const GMAIL_SUGGESTIONS = [
-    {
-      label: 'What is MCP?',
-      subject: 'What is MCP?',
-      body: 'This email was sent by a Gemini LLM agent using Gmail MCP — not manually.',
-    },
-    {
-      label: 'Week 4 complete',
-      subject: 'Talk2MCP Week 4 complete',
-      body: 'Paint was controlled without an API. This email proves the same MCP pattern works for Gmail.',
-    },
-    {
-      label: 'Quick MCP test',
-      subject: 'MCP agent test',
-      body: 'Hello from Talk2Gmail — LLM chose send-email via MCP.',
-    },
-  ];
+  let wasRunning = false;
+  let lastToastSeq = 0;
+  let logPollId = null;
 
   const STORAGE_KEY = 'talk2mcp_selected_agent';
+  const DEFAULT_PAINT_QUESTION = 'I love India';
 
-  // Block explicit tool/command phrasing, not normal questions mentioning Paint.
+  const AGENT_UI = {
+    paint: {
+      title: 'Run Paint',
+      desc: 'Text goes inside Paint — Gemini calls the tools',
+      toolsTitle: 'Paint MCP Tools',
+      toolsDesc: 'LLM call order',
+    },
+    gmail: {
+      title: 'Run Gmail',
+      desc: 'LLM sends email via send-email',
+      toolsTitle: 'Gmail MCP Tools',
+      toolsDesc: 'Required tool',
+    },
+  };
+
+  // Block explicit MCP tool names / paint automation commands — not plain phrases.
   const MANUAL_PAINT_PATTERNS = [
     /\bopen_paint\b/i,
     /\bdraw_rectangle\b/i,
@@ -77,7 +70,8 @@
     /\bmspaint\b/i,
     /\bdraw\s+[a-z]\s*letter\b/i,
     /\bdraw\s+letter\b/i,
-    /\bopen\s+paint\s+draw\b/i,
+    /\badd\s+text\s+['"]/i,
+    /\bopen\s+paint\s*,/i,
   ];
 
   function paintInputState(text) {
@@ -90,18 +84,15 @@
     return paintInputState(text) === 'blocked';
   }
 
-  const AGENT_UI = {
-    paint: {
-      formTitle: 'Run Paint Agent',
-      formDesc: 'Enter text to write in Paint — Gemini calls open_paint → draw_rectangle → add_text_in_paint.',
-      runHint: '<strong>Run Live</strong> = Gemini + Paint &nbsp;|&nbsp; <strong>Dry Run</strong> = simulate 3 tools',
-    },
-    gmail: {
-      formTitle: 'Run Gmail Agent',
-      formDesc: 'Fill email fields — the LLM calls send-email via Gmail MCP.',
-      runHint: '<strong>Run Live</strong> = Gemini + Gmail MCP &nbsp;|&nbsp; <strong>Dry Run</strong> = simulate send-email',
-    },
-  };
+  function normalizePaintInput(text) {
+    const t = (text || '').trim();
+    if (!t || !looksLikeManualPaintCommand(t)) return t;
+    const quoted = t.match(/['"]([^'"]{1,500})['"]/);
+    if (quoted) return quoted[1].trim();
+    const addText = t.match(/\badd\s+text\s+(.+)$/i);
+    if (addText) return addText[1].replace(/^['"]|['"]$/g, '').trim();
+    return t;
+  }
 
   // --- Tabs ---
   const tabs = document.querySelectorAll('.tab');
@@ -112,11 +103,9 @@
     tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
     panels.forEach((p) => p.classList.toggle('active', p.id === 'panel-' + name));
     if (name === 'logs') refreshLogs(true);
-    if (name === 'tests') loadTestCases();
   }
 
   tabs.forEach((tab) => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
-  if (helpShortcut) helpShortcut.addEventListener('click', () => switchTab('guide'));
 
   // --- Helpers ---
   function escapeHtml(str) {
@@ -148,51 +137,100 @@
   }
 
   function initPaintSuggestions() {
-    const container = document.getElementById('paint-suggestions');
-    if (!container) return;
-    container.innerHTML = PAINT_SUGGESTIONS.map(
-      (q) =>
-        `<button type="button" class="suggest-chip" data-q="${encodeURIComponent(q)}">${escapeHtml(q)}</button>`
-    ).join('');
-    container.querySelectorAll('.suggest-chip').forEach((chip) => {
-      chip.addEventListener('click', () => {
-        selectAgent('paint');
-        document.getElementById('question').value = decodeURIComponent(chip.dataset.q);
-        document.getElementById('question').focus();
-        updatePaintWarn();
-        hideAlert();
-        showAlert('Suggestion filled — click Run Live or Dry Run.', 'info');
+    if (!paintSuggestions) return;
+    paintSuggestions.querySelectorAll('.suggest-chip').forEach((chip) => {
+      const text = chip.dataset.q || chip.textContent.trim();
+      chip.dataset.q = text;
+      chip.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        fillPaintQuestion(text);
       });
     });
   }
 
-  function updatePaintWarn() {
-    const warn = document.getElementById('paint-warn');
-    const q = document.getElementById('question');
-    if (!warn || !q) return;
-    const state = paintInputState(q.value);
-    warn.classList.remove('suggest-warn-bad', 'suggest-warn-ok');
-    if (state === 'blocked') {
-      warn.classList.add('suggest-warn-bad');
-      warn.innerHTML =
-        '<strong>Looks like a manual paint command.</strong> Enter a question instead — ' +
-        'e.g. “What is MCP?” — and let Gemini call the 3 MCP tools.';
-    } else if (state === 'ok') {
-      warn.classList.add('suggest-warn-ok');
-      warn.innerHTML =
-        '<strong>Ready.</strong> Gemini will call ' +
-        '<code>open_paint</code> → <code>draw_rectangle</code> → <code>add_text_in_paint</code> for you.';
-    } else {
-      warn.innerHTML =
-        '<strong>Tip:</strong> Ask a question like “What is MCP?” — not a command like “open paint draw S letter”.';
+  function fillPaintQuestion(text) {
+    if (statusSnapshot && statusSnapshot.running) return;
+    if (localRunning && statusSnapshot && !statusSnapshot.running) {
+      clearLocalRun();
+      setRunningUI(false, null);
     }
+    if (localRunning) return;
+    applyAgentUI('paint');
+    try {
+      sessionStorage.setItem(STORAGE_KEY, 'paint');
+    } catch (_) {
+      /* ignore */
+    }
+    const q = document.getElementById('question');
+    if (!q) return;
+    q.value = text;
+    q.focus();
+    if (paintSuggestions) {
+      paintSuggestions.querySelectorAll('.suggest-chip').forEach((chip) => {
+        chip.classList.toggle('active', chip.dataset.q === text);
+      });
+    }
+    syncFormState();
+    hideAlert();
+  }
+
+  function isAppRunning() {
+    if (statusSnapshot && statusSnapshot.running) return true;
+    if (localRunning && statusSnapshot && !statusSnapshot.running) {
+      clearLocalRun();
+      return false;
+    }
+    if (localRunning) return true;
+    return false;
+  }
+
+  function resultAgent(data) {
+    if (!data) return null;
+    if (data.last_result && data.last_result.agent) return data.last_result.agent;
+    return data.last_agent || null;
+  }
+
+  function syncFormState() {
+    if (isAppRunning()) {
+      return;
+    }
+    if (currentAgent === 'paint') {
+      const q = document.getElementById('question');
+      if (!q) return;
+      const normalized = normalizePaintInput(q.value);
+      const blocked = paintInputState(normalized) === 'blocked';
+      const empty = !normalized.trim();
+      runBtn.disabled = blocked || empty;
+      dryBtn.disabled = blocked || empty;
+      return;
+    }
+    const to = (document.getElementById('email-to') || {}).value || '';
+    const subject = (document.getElementById('email-subject') || {}).value || '';
+    const body = (document.getElementById('email-body') || {}).value || '';
+    const gmailReady = to.trim() && subject.trim() && body.trim();
+    runBtn.disabled = !gmailReady;
+    dryBtn.disabled = !gmailReady;
   }
 
   function snapshotRunState(data) {
+    const hist = (data && data.run_history) || [];
     return {
+      historySeq: (data && data.history_seq) || 0,
+      historyId: hist[0]?.id || 0,
       result: JSON.stringify((data && data.last_result) || null),
       error: (data && data.last_error) || null,
     };
+  }
+
+  function runFinished(data) {
+    if (!runBaseline) return !data.running;
+    if (data.running) return false;
+    const seq = data.history_seq || 0;
+    if (seq > runBaseline.historySeq) return true;
+    const topId = (data.run_history && data.run_history[0] && data.run_history[0].id) || 0;
+    if (topId > runBaseline.historyId) return true;
+    return runStateChanged(data);
   }
 
   function runStateChanged(data) {
@@ -201,9 +239,20 @@
     return snap.result !== runBaseline.result || snap.error !== runBaseline.error;
   }
 
+  function resolveRunningState(data) {
+    if (data.running) {
+      return { running: true, agent: data.running_agent };
+    }
+    if (localRunning) {
+      clearLocalRun();
+    }
+    return { running: false, agent: null };
+  }
+
   function clearLocalRun() {
     localRunning = false;
     runBaseline = null;
+    runStartedAt = 0;
   }
 
   function setCapPill(el, ok, okText, badText) {
@@ -216,36 +265,14 @@
     if (!capGmail) return;
     if (!setup) {
       setCapPill(capGmail, false, 'Gmail ✓', 'Gmail setup');
-      return;
-    }
-    if (setup.ready) {
+    } else if (setup.ready) {
       setCapPill(capGmail, true, 'Gmail ✓', 'Gmail setup');
-      return;
-    }
-    if (setup.creds_ok && !setup.token_ok) {
+    } else if (setup.creds_ok && !setup.token_ok) {
       capGmail.textContent = 'OAuth needed';
       capGmail.className = 'cap-pill cap-warn';
-      return;
+    } else {
+      setCapPill(capGmail, false, 'Gmail ✓', 'Gmail setup');
     }
-    setCapPill(capGmail, false, 'Gmail ✓', 'Gmail setup');
-  }
-
-  function initGmailSuggestions() {
-    const container = document.getElementById('gmail-suggestions');
-    if (!container) return;
-    container.innerHTML = GMAIL_SUGGESTIONS.map(
-      (s, i) =>
-        `<button type="button" class="suggest-chip suggest-chip-gmail" data-idx="${i}">${escapeHtml(s.label)}</button>`
-    ).join('');
-    container.querySelectorAll('.suggest-chip').forEach((chip) => {
-      chip.addEventListener('click', () => {
-        const s = GMAIL_SUGGESTIONS[parseInt(chip.dataset.idx, 10)];
-        document.getElementById('email-subject').value = s.subject;
-        document.getElementById('email-body').value = s.body;
-        selectAgent('gmail');
-        showAlert('Email template filled — add your address in To, then Run.', 'info');
-      });
-    });
   }
 
   function applyAgentUI(agent) {
@@ -253,27 +280,26 @@
     document.querySelectorAll('.agent-card').forEach((c) => {
       c.classList.toggle('active', c.dataset.agent === agent);
     });
-    fieldsPaint.classList.toggle('hidden', agent !== 'paint');
-    fieldsGmail.classList.toggle('hidden', agent !== 'gmail');
+    if (fieldsPaint) fieldsPaint.classList.toggle('hidden', agent !== 'paint');
+    if (fieldsGmail) fieldsGmail.classList.toggle('hidden', agent !== 'gmail');
+    if (paintSuggestionsWrap) paintSuggestionsWrap.classList.toggle('hidden', agent !== 'paint');
     const ui = AGENT_UI[agent];
-    if (ui) {
-      formTitle.textContent = ui.formTitle;
-      formDesc.textContent = ui.formDesc;
-      document.getElementById('run-hint').innerHTML = ui.runHint;
-    }
-    if (testsAgentBadge) testsAgentBadge.textContent = agent;
+    if (ui && formTitle) formTitle.textContent = ui.title;
+    if (ui && formDesc) formDesc.textContent = ui.desc;
+    if (ui && toolsTitle) toolsTitle.textContent = ui.toolsTitle;
+    if (ui && toolsDesc) toolsDesc.textContent = ui.toolsDesc;
     if (logFilter) {
       logFilter.value = agent === 'gmail' ? 'gmail' : 'paint';
     }
     renderToolsPanel();
-    if (activeTab === 'tests') loadTestCases();
     if (activeTab === 'logs') refreshLogs(true);
   }
 
   function selectAgent(agent) {
     if (!AGENT_UI[agent]) return;
-    if (localRunning || (statusSnapshot && statusSnapshot.running)) return;
+    if (isAppRunning()) return;
     applyAgentUI(agent);
+    if (agent === 'paint' || agent === 'gmail') syncFormState();
     try {
       sessionStorage.setItem(STORAGE_KEY, agent);
     } catch (_) {
@@ -312,6 +338,17 @@
     applyAgentUI('paint');
   }
 
+  function initDefaultPaintQuestion() {
+    const q = document.getElementById('question');
+    if (!q || q.value.trim()) return;
+    q.value = DEFAULT_PAINT_QUESTION;
+    if (paintSuggestions) {
+      paintSuggestions.querySelectorAll('.suggest-chip').forEach((chip) => {
+        chip.classList.toggle('active', chip.dataset.q === DEFAULT_PAINT_QUESTION);
+      });
+    }
+  }
+
   if (agentGrid) {
     agentGrid.querySelectorAll('.agent-card').forEach((card) => {
       card.addEventListener('click', () => selectAgent(card.dataset.agent));
@@ -320,10 +357,7 @@
 
   function renderToolsPanel() {
     const meta = agentsMeta[currentAgent];
-    if (!meta) return;
-    toolsTitle.textContent = meta.name + ' Tools';
-    toolsDesc.textContent =
-      currentAgent === 'paint' ? 'LLM must call in this order' : 'LLM must call this tool';
+    if (!meta || !toolsList) return;
     toolsList.innerHTML = (meta.tools || [])
       .map(
         (tool, i) => `
@@ -335,10 +369,6 @@
       </li>`
       )
       .join('');
-    toolsMeta.innerHTML = `
-      <li><span class="meta-label">Log</span> <code>logs/${escapeHtml(meta.log_file)}</code></li>
-      <li><span class="meta-label">CLI</span> <code>${escapeHtml(meta.cli)}</code></li>
-      <li><span class="meta-label">Ready</span> ${meta.configured ? '✓ configured' : '⚠ setup needed'}</li>`;
   }
 
   async function loadAgents() {
@@ -361,27 +391,30 @@
 
   function setRunningUI(running, runningAgent) {
     const disabled = !!running;
-    runBtn.disabled = disabled;
-    dryBtn.disabled = disabled;
+    if (!disabled) {
+      syncFormState();
+    } else {
+      runBtn.disabled = disabled;
+      dryBtn.disabled = disabled;
+    }
     document.querySelectorAll('.agent-card').forEach((c) => {
       c.disabled = disabled;
       c.classList.toggle('disabled', disabled);
     });
-    document.querySelectorAll('.tc-run, .tc-dry, .tc-fill').forEach((el) => {
-      el.disabled = disabled;
-    });
 
     if (running) {
-      statusBadge.className = 'badge badge-warning';
+      statusBadge.className = 'badge badge-warning badge-running';
       const label = runningAgent === 'gmail' ? 'Gmail' : 'Paint';
-      statusText.innerHTML = '<span class="spinner"></span> Running ' + label;
+      statusText.innerHTML = '<span class="badge-dot"></span> Running · ' + label;
+      if (outputWrap) outputWrap.classList.add('running');
       if (output.dataset.cleared !== '1' && !output.dataset.cleared) {
-        output.textContent = label + ' agent running… waiting for LLM tool calls…';
+        output.textContent = 'Running…';
         output.classList.remove('waiting');
       }
     } else {
       statusBadge.className = 'badge badge-success';
       statusText.innerHTML = '<span class="badge-dot"></span> Idle';
+      if (outputWrap) outputWrap.classList.remove('running');
       markRunningAgent(false, null);
     }
   }
@@ -396,8 +429,9 @@
     outputError.classList.remove('hidden');
   }
 
-  function renderTranscript(data) {
+  function renderTranscript(data, runningOverride) {
     const userCleared = output.dataset.cleared === '1';
+    const isRunning = runningOverride !== undefined ? runningOverride : !!data.running;
 
     if (!userCleared) {
       showOutputError(data.last_error || '');
@@ -405,9 +439,9 @@
       showOutputError('');
     }
 
-    if (data.running && !userCleared) {
-      const label = data.running_agent === 'gmail' ? 'Gmail' : 'Paint';
-      output.textContent = label + ' agent running… waiting for LLM tool calls…';
+    if (isRunning && !userCleared) {
+      if (outputWrap) outputWrap.classList.add('running');
+      output.textContent = 'Running…';
       output.classList.remove('waiting');
       return;
     }
@@ -416,29 +450,31 @@
       return;
     }
 
+    const agentForResult = resultAgent(data);
+    if (!isRunning && data.last_result && agentForResult && agentForResult !== currentAgent) {
+      output.classList.remove('waiting');
+      output.classList.add('output-hint');
+      const label = agentForResult === 'gmail' ? 'Gmail' : 'Paint';
+      output.textContent =
+        'Latest run was on ' + label + '. Switch to ' + label + ' MCP to view the transcript.';
+      if (outputWrap) outputWrap.classList.remove('running');
+      return;
+    }
+
+    output.classList.remove('output-hint');
+
     if (!data.last_result) {
       if (!userCleared) {
-        output.textContent = '';
+        output.textContent = 'Run an agent to see the MCP transcript here.';
         output.classList.add('waiting');
       }
       return;
     }
 
     output.classList.remove('waiting');
+    if (outputWrap) outputWrap.classList.remove('running');
     const r = data.last_result;
     const lines = [];
-    const resultAgent = r.agent || data.last_agent || 'paint';
-    if (resultAgent !== currentAgent) {
-      lines.push(
-        '(Showing last ' +
-          resultAgent +
-          ' run — switch agent or run again to refresh for ' +
-          currentAgent +
-          ')'
-      );
-      lines.push('');
-    }
-    lines.push('Agent: ' + resultAgent);
     if (r.agent === 'gmail' || r.recipient) {
       lines.push('To: ' + (r.recipient || ''));
       lines.push('Subject: ' + (r.subject || ''));
@@ -446,8 +482,8 @@
       lines.push('Question: ' + (r.question || ''));
     }
     lines.push('Model: ' + (r.model || ''));
-    if (r.dry_run) lines.push('Mode: dry-run (simulated)');
-    if (r.complete === false) lines.push('Status: INCOMPLETE — not all required tools ran');
+    if (r.dry_run) lines.push('dry-run');
+    if (r.complete === false) lines.push('INCOMPLETE');
     if (r.tools_called) {
       lines.push('Tools called: ' + (r.tools_called.join(', ') || '(none)'));
     }
@@ -478,9 +514,9 @@
 
   function renderHistory(history) {
     const rows = history || [];
-    historyCount.textContent = rows.length + ' run' + (rows.length === 1 ? '' : 's');
+    historyCount.textContent = String(rows.length);
     if (!rows.length) {
-      historyBody.innerHTML = '<tr class="empty-row"><td colspan="6">No runs yet.</td></tr>';
+      historyBody.innerHTML = '<tr class="empty-row"><td colspan="6">No runs yet</td></tr>';
       return;
     }
     historyBody.innerHTML = rows
@@ -498,99 +534,6 @@
       .join('');
   }
 
-  function fillPaintCase(tc) {
-    document.getElementById('question').value = tc.question || '';
-    updatePaintWarn();
-    selectAgent('paint');
-  }
-
-  function fillGmailCase(tc) {
-    document.getElementById('email-to').value = tc.to || '';
-    document.getElementById('email-subject').value = tc.subject || '';
-    document.getElementById('email-body').value = tc.body || '';
-    selectAgent('gmail');
-  }
-
-  async function loadTestCases() {
-    try {
-      const res = await fetch('/api/test-cases?agent=' + currentAgent);
-      const data = await res.json();
-      const cases = data.cases || [];
-
-      if (currentAgent === 'paint') {
-        testCasesList.innerHTML = cases
-          .map(
-            (tc) => `
-          <div class="test-case-card">
-            <span class="test-case-title">${escapeHtml(tc.title)}</span>
-            <div class="test-case-q">${escapeHtml(tc.question)}</div>
-            <div class="test-case-hint">${escapeHtml(tc.hint)}</div>
-            <div class="test-case-actions">
-              <button type="button" class="btn btn-primary tc-run" data-id="${escapeHtml(tc.id)}">▶ Live</button>
-              <button type="button" class="btn btn-outline tc-dry" data-id="${escapeHtml(tc.id)}">⚡ Dry</button>
-              <button type="button" class="btn btn-ghost tc-fill" data-id="${escapeHtml(tc.id)}">Fill</button>
-            </div>
-          </div>`
-          )
-          .join('');
-        testCasesList.querySelectorAll('.tc-run').forEach((el, i) => {
-          el.addEventListener('click', () => {
-            fillPaintCase(cases[i]);
-            startRun(false);
-          });
-        });
-        testCasesList.querySelectorAll('.tc-dry').forEach((el, i) => {
-          el.addEventListener('click', () => {
-            fillPaintCase(cases[i]);
-            startRun(true);
-          });
-        });
-        testCasesList.querySelectorAll('.tc-fill').forEach((el, i) => {
-          el.addEventListener('click', () => {
-            fillPaintCase(cases[i]);
-            showAlert('Question filled.', 'info');
-          });
-        });
-      } else {
-        testCasesList.innerHTML = cases
-          .map(
-            (tc) => `
-          <div class="test-case-card">
-            <span class="test-case-title">${escapeHtml(tc.title)}</span>
-            <div class="test-case-q">${escapeHtml(tc.subject)}</div>
-            <div class="test-case-hint">${escapeHtml(tc.hint)}</div>
-            <div class="test-case-actions">
-              <button type="button" class="btn btn-primary tc-run" data-id="${escapeHtml(tc.id)}">▶ Live</button>
-              <button type="button" class="btn btn-outline tc-dry" data-id="${escapeHtml(tc.id)}">⚡ Dry</button>
-              <button type="button" class="btn btn-ghost tc-fill" data-id="${escapeHtml(tc.id)}">Fill</button>
-            </div>
-          </div>`
-          )
-          .join('');
-        testCasesList.querySelectorAll('.tc-run').forEach((el, i) => {
-          el.addEventListener('click', () => {
-            fillGmailCase(cases[i]);
-            startRun(false);
-          });
-        });
-        testCasesList.querySelectorAll('.tc-dry').forEach((el, i) => {
-          el.addEventListener('click', () => {
-            fillGmailCase(cases[i]);
-            startRun(true);
-          });
-        });
-        testCasesList.querySelectorAll('.tc-fill').forEach((el, i) => {
-          el.addEventListener('click', () => {
-            fillGmailCase(cases[i]);
-            showAlert('Email fields filled — add To address for live run.', 'info');
-          });
-        });
-      }
-    } catch {
-      testCasesList.innerHTML = '<p class="muted-text">Could not load test cases.</p>';
-    }
-  }
-
   function ensureLogBlocks(filter) {
     if (!logBlocks) return;
     const key = filter + ':' + (logLines ? logLines.value : '200');
@@ -598,11 +541,11 @@
     logsLayoutKey = key;
     const blocks = [];
     if (filter === 'all' || filter === 'paint') {
-      blocks.push({ id: 'log-paint-agent', label: 'Paint agent (talk2mcp.log)', key: 'paint_agent' });
-      blocks.push({ id: 'log-paint-server', label: 'Paint MCP server', key: 'paint_server' });
+      blocks.push({ id: 'log-paint-agent', label: 'talk2mcp.log', key: 'paint_agent' });
+      blocks.push({ id: 'log-paint-server', label: 'paint_mcp_server.log', key: 'paint_server' });
     }
     if (filter === 'all' || filter === 'gmail') {
-      blocks.push({ id: 'log-gmail-agent', label: 'Gmail agent (talk2gmail.log)', key: 'gmail_agent' });
+      blocks.push({ id: 'log-gmail-agent', label: 'talk2gmail.log', key: 'gmail_agent' });
     }
     logBlocks.innerHTML = blocks
       .map(
@@ -622,17 +565,37 @@
     if (forceRebuild) logsLayoutKey = '';
     ensureLogBlocks(filter);
     try {
-      const res = await fetch('/api/logs?lines=' + lines + '&agent=' + filter);
+      const res = await fetch('/api/logs?lines=' + lines + '&agent=' + filter + '&_=' + Date.now());
       const data = await res.json();
       logBlocks.querySelectorAll('.log-pre').forEach((pre) => {
         const logKey = pre.dataset.key;
-        pre.textContent = data[logKey] || '(empty)';
+        const text = data[logKey] || '(empty)';
+        const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+        pre.textContent = text;
         pre.classList.remove('waiting');
+        if (atBottom || text.endsWith('(empty)') === false) {
+          pre.scrollTop = pre.scrollHeight;
+        }
       });
     } catch (err) {
-      logBlocks.innerHTML =
-        '<p class="muted-text">Could not load logs: ' + escapeHtml(err.message) + '</p>';
-      logsLayoutKey = '';
+      if (forceRebuild) {
+        logBlocks.innerHTML =
+          '<p class="muted-text">Could not load logs: ' + escapeHtml(err.message) + '</p>';
+        logsLayoutKey = '';
+      }
+    }
+  }
+
+  function startLogPolling() {
+    stopLogPolling();
+    refreshLogs(false);
+    logPollId = setInterval(() => refreshLogs(false), 800);
+  }
+
+  function stopLogPolling() {
+    if (logPollId) {
+      clearInterval(logPollId);
+      logPollId = null;
     }
   }
 
@@ -655,31 +618,36 @@
       const res = await fetch('/api/status');
       const data = await res.json();
       statusSnapshot = data;
-      if (data.running) {
-        clearLocalRun();
-        markRunningAgent(true, data.running_agent);
-      } else if (localRunning) {
-        if (runStateChanged(data)) {
-          clearLocalRun();
-          markRunningAgent(false, null);
-        } else {
-          markRunningAgent(true, currentAgent);
+      const runState = resolveRunningState(data);
+
+      if (wasRunning && !runState.running) {
+        output.dataset.cleared = '';
+        const seq = data.history_seq || 0;
+        if (seq > lastToastSeq) {
+          lastToastSeq = seq;
+          const ok = !data.last_error && data.last_result && data.last_result.complete !== false;
+          showAlert(ok ? 'Run finished successfully.' : 'Run finished with issues — see output.', ok ? 'success' : 'error');
         }
-      } else {
-        markRunningAgent(false, null);
       }
-      const running = !!data.running || localRunning;
-      const runningAgent = data.running
-        ? data.running_agent
-        : localRunning
-          ? currentAgent
-          : null;
-      setRunningUI(running, runningAgent);
+      wasRunning = runState.running;
+
+      markRunningAgent(runState.running, runState.agent);
+      setRunningUI(runState.running, runState.agent);
       setCapPill(capApi, data.api_key_valid, 'API key ✓', 'API key ✗');
       setGmailPill(data.gmail_setup || (data.gmail_configured ? { ready: true } : null));
-      renderTranscript(data);
+      renderTranscript(data, runState.running);
       renderHistory(data.run_history);
-      if (activeTab === 'logs') refreshLogs(false);
+      if (runState.running) {
+        refreshLogs(false);
+      } else if (activeTab === 'logs') {
+        refreshLogs(false);
+      }
+      if (runState.running && !logPollId) {
+        startLogPolling();
+      } else if (!runState.running && logPollId) {
+        stopLogPolling();
+        refreshLogs(false);
+      }
     } catch (err) {
       if (output.dataset.cleared !== '1') {
         output.textContent = 'Could not reach API: ' + err.message;
@@ -703,7 +671,13 @@
   function buildPayload(dryRun) {
     const payload = { agent: currentAgent, dry_run: dryRun };
     if (currentAgent === 'paint') {
-      payload.question = document.getElementById('question').value.trim();
+      const qEl = document.getElementById('question');
+      const question = normalizePaintInput(qEl ? qEl.value : '');
+      if (qEl && question !== qEl.value.trim()) {
+        qEl.value = question;
+        syncFormState();
+      }
+      payload.question = question;
       if (!payload.question) return null;
     } else {
       payload.to = document.getElementById('email-to').value.trim();
@@ -716,32 +690,22 @@
 
   async function startRun(dryRun) {
     const payload = buildPayload(dryRun);
-    if (!payload) {
-      showAlert(
-        currentAgent === 'paint'
-          ? 'Please enter a question.'
-          : 'Please fill To, Subject, and Message.',
-        'error'
-      );
-      return;
-    }
+    if (!payload) return;
 
     if (currentAgent === 'paint' && looksLikeManualPaintCommand(payload.question)) {
-      showAlert(
-        'That looks like a manual paint command. Enter a question or phrase instead — ' +
-          'e.g. "What is MCP?" — and Gemini will call the Paint tools automatically.',
-        'error'
-      );
+      showAlert('Type plain text only — the LLM calls Paint tools for you.', 'error');
+      syncFormState();
       return;
     }
 
     output.dataset.cleared = '';
     showOutputError('');
+    hideAlert();
     localRunning = true;
+    runStartedAt = Date.now();
     runBaseline = snapshotRunState(statusSnapshot);
     setRunningUI(true, currentAgent);
     markRunningAgent(true, currentAgent);
-    showAlert(dryRun ? 'Starting dry-run…' : 'Starting live agent…', 'info');
 
     try {
       const res = await fetch('/api/run', {
@@ -752,16 +716,21 @@
       const data = await res.json();
       if (!res.ok) {
         clearLocalRun();
+        stopLogPolling();
         setRunningUI(false);
         markRunningAgent(false, null);
         showAlert(formatError(data.detail), 'error');
         return;
       }
-      showAlert(data.message, 'success');
+      hideAlert();
       clearPollTimers();
-      [300, 800, 1500, 3000, 6000, 10000].forEach(schedulePoll);
+      showAlert(data.message || 'Run started.', 'info');
+      switchTab('logs');
+      startLogPolling();
+      [200, 500, 1000, 1500, 2500, 4000, 6000, 10000].forEach(schedulePoll);
     } catch (err) {
       clearLocalRun();
+      stopLogPolling();
       setRunningUI(false);
       markRunningAgent(false, null);
       showAlert('Network error: ' + err.message, 'error');
@@ -785,19 +754,25 @@
 
   hideAlert();
   initPaintSuggestions();
-  initGmailSuggestions();
   const questionEl = document.getElementById('question');
   if (questionEl) {
     questionEl.addEventListener('input', () => {
-      updatePaintWarn();
-      if (paintInputState(questionEl.value) !== 'blocked') hideAlert();
+      if (paintSuggestions) {
+        paintSuggestions.querySelectorAll('.suggest-chip').forEach((c) => c.classList.remove('active'));
+      }
+      syncFormState();
+      hideAlert();
     });
   }
+  ['email-to', 'email-subject', 'email-body'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', syncFormState);
+  });
   restoreSelectedAgent();
-  updatePaintWarn();
+  initDefaultPaintQuestion();
+  syncFormState();
   if (logLinesVal && logLines) logLinesVal.textContent = logLines.value;
   loadAgents();
-  loadTestCases();
   setInterval(refreshStatus, 2000);
   refreshStatus();
 })();

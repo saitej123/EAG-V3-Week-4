@@ -26,6 +26,8 @@ def test_home_page():
     assert "Gmail MCP" in text
     assert "Run Live" in text
     assert "Dry Run" in text
+    assert "I love India" in text
+    assert 'data-q="What is MCP?"' in text
 
 
 def test_agents_api():
@@ -66,6 +68,7 @@ def test_status_idle():
     assert res.status_code == 200
     data = res.json()
     assert data["running"] is False
+    assert "history_seq" in data
     assert "gmail_configured" in data
     assert "last_agent" in data
 
@@ -79,8 +82,25 @@ def test_run_paint_dry_run():
     assert res.json()["agent"] == "paint"
     time.sleep(0.5)
     status = client.get("/api/status").json()
+    assert status["running"] is False
+    assert status["running_agent"] is None
     assert status["last_result"] is not None
     assert status["last_result"]["agent"] == "paint"
+    assert status["history_seq"] >= 1
+
+
+def test_run_paint_same_question_twice_clears_running():
+    question = "What is MCP?"
+    for _ in range(2):
+        res = client.post(
+            "/api/run",
+            json={"agent": "paint", "question": question, "dry_run": True},
+        )
+        assert res.status_code == 200
+        time.sleep(0.5)
+        status = client.get("/api/status").json()
+        assert status["running"] is False
+        assert status["last_result"]["question"] == question
 
 
 def test_run_gmail_dry_run():
@@ -98,6 +118,8 @@ def test_run_gmail_dry_run():
     assert res.json()["agent"] == "gmail"
     time.sleep(0.5)
     status = client.get("/api/status").json()
+    assert status["running"] is False
+    assert status["running_agent"] is None
     assert status["last_result"]["agent"] == "gmail"
 
 
@@ -162,7 +184,7 @@ def test_run_gmail_live_requires_config(monkeypatch):
 
 
 def test_gmail_setup_status_detects_empty_token(tmp_path, monkeypatch):
-    from app import gmail_setup_status
+    from talk2gmail import gmail_setup_status
 
     creds = tmp_path / "client_creds.json"
     token = tmp_path / "app_tokens.json"
@@ -175,14 +197,15 @@ def test_gmail_setup_status_detects_empty_token(tmp_path, monkeypatch):
     repo.mkdir()
 
     monkeypatch.setenv("GMAIL_MCP_REPO", str(repo))
-    monkeypatch.setenv("GMAIL_CREDS_FILE", str(creds))
-    monkeypatch.setenv("GMAIL_TOKEN_FILE", str(token))
+    monkeypatch.setenv("GMAIL_OAUTH_CREDS_FILE", str(creds))
+    monkeypatch.setenv("GMAIL_OAUTH_TOKEN_FILE", str(token))
 
     status = gmail_setup_status()
     assert status["creds_ok"] is True
     assert status["token_ok"] is False
     assert status["ready"] is False
-    assert "OAuth token" in status["message"]
+    assert "token" in status["message"].lower()
+    assert status["next_step"]
 
 
 def test_agents_api_includes_gmail_setup():

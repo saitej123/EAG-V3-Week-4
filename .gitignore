@@ -22,7 +22,7 @@ output/*.png
 !logs/.gitkeep
 !output/.gitkeep
 
-# Gmail OAuth (bonus — never commit)
+# Gmail OAuth (never commit)
 client_creds.json
 *_creds.json
 app_tokens.json

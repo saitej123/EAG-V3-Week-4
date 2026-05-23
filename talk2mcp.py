@@ -32,6 +32,7 @@ load_dotenv()
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 MAX_TURNS = int(os.getenv("AGENT_MAX_TURNS", "12"))
+GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "90"))
 HERE = Path(__file__).parent
 LOG_DIR = HERE / "logs"
 LOG_DIR.mkdir(exist_ok=True)
@@ -45,6 +46,7 @@ logger.add(
     rotation="2 MB",
     retention=20,
     format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {message}",
+    enqueue=False,
 )
 
 SYSTEM_PROMPT = """You are an MCP agent controlling Microsoft Paint.
@@ -257,23 +259,32 @@ async def run_agent(question: str, *, dry_run: bool = False) -> dict[str, Any]:
                 for turn in range(1, MAX_TURNS + 1):
                     logger.info("--- LLM turn {} ---", turn)
                     force_tools = not all_tools_called(called_tools)
-                    response = await client.aio.models.generate_content(
-                        model=MODEL,
-                        contents=contents,
-                        config=types.GenerateContentConfig(
-                            system_instruction=SYSTEM_PROMPT,
-                            temperature=0.1,
-                            tools=[gemini_tool],
-                            automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                                disable=True
+                    try:
+                        response = await asyncio.wait_for(
+                            client.aio.models.generate_content(
+                                model=MODEL,
+                                contents=contents,
+                                config=types.GenerateContentConfig(
+                                    system_instruction=SYSTEM_PROMPT,
+                                    temperature=0.1,
+                                    tools=[gemini_tool],
+                                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                                        disable=True
+                                    ),
+                                    tool_config=types.ToolConfig(
+                                        function_calling_config=types.FunctionCallingConfig(
+                                            mode="ANY" if force_tools else "AUTO"
+                                        )
+                                    ),
+                                ),
                             ),
-                            tool_config=types.ToolConfig(
-                                function_calling_config=types.FunctionCallingConfig(
-                                    mode="ANY" if force_tools else "AUTO"
-                                )
-                            ),
-                        ),
-                    )
+                            timeout=GEMINI_TIMEOUT,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error(
+                            "Gemini API timed out after {}s on turn {}", GEMINI_TIMEOUT, turn
+                        )
+                        break
 
                     if not response.candidates:
                         logger.error("No candidates returned from Gemini.")
@@ -365,6 +376,16 @@ async def run_agent(question: str, *, dry_run: bool = False) -> dict[str, Any]:
                                 )
 
                         contents.append(types.Content(role="tool", parts=response_parts))
+                        if all_tools_called(called_tools):
+                            complete = True
+                            final_text = f"Drew rectangle in Paint with text: {question!r}"
+                            transcript.append(
+                                {"turn": turn, "type": "final", "text": final_text}
+                            )
+                            logger.info(
+                                "All 3 Paint tools done — agent finished (no extra LLM turn)."
+                            )
+                            break
                         continue
 
                     if not all_tools_called(called_tools):

@@ -8,7 +8,7 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 Pillow>=10.0.0
 
-# Gmail OAuth setup (scripts/gmail_oauth_setup.py)
+# Gmail OAuth setup (python talk2gmail.py --setup-oauth)
 google-auth-oauthlib>=1.2.0
 google-auth>=2.0.0
 google-api-python-client>=2.0.0

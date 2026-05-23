@@ -69,6 +69,12 @@ PAINT_WINDOW_Y: int = int(os.getenv("PAINT_WINDOW_Y", "40"))
 PAINT_WINDOW_WIDTH: int = int(os.getenv("PAINT_WINDOW_WIDTH", "1280"))
 PAINT_WINDOW_HEIGHT: int = int(os.getenv("PAINT_WINDOW_HEIGHT", "820"))
 PAINT_LAUNCH_DELAY: float = float(os.getenv("PAINT_LAUNCH_DELAY", "2.0"))
+PAINT_AUTO_CLOSE: bool = os.getenv("PAINT_AUTO_CLOSE", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+PAINT_CLOSE_DELAY: float = float(os.getenv("PAINT_CLOSE_DELAY", "6"))
 RECT_TOOL_X: int = int(os.getenv("PAINT_RECT_TOOL_X", "180"))
 RECT_TOOL_Y: int = int(os.getenv("PAINT_RECT_TOOL_Y", "145"))
 TEXT_TOOL_X: int = int(os.getenv("PAINT_TEXT_TOOL_X", "250"))
@@ -136,6 +142,33 @@ def to_screen(x: int, y: int, monitor: MonitorInfo | None = None) -> tuple[int, 
 
 def to_screen_with_monitor(x: int, y: int, monitor: MonitorInfo) -> tuple[int, int]:
     return monitor.offset_x + x, monitor.offset_y + y
+
+
+def schedule_close_paint() -> None:
+    """Close MS Paint after PAINT_CLOSE_DELAY seconds — detached so it survives MCP exit."""
+    if not PAINT_AUTO_CLOSE:
+        return
+
+    delay = max(1, int(PAINT_CLOSE_DELAY))
+    kill_cmd = f"timeout /t {delay} /nobreak >nul && taskkill /IM mspaint.exe /F"
+
+    try:
+        if is_wsl():
+            subprocess.Popen(
+                ["cmd.exe", "/c", "start", "/B", "cmd.exe", "/c", kill_cmd],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        elif os.name == "nt":
+            subprocess.Popen(
+                ["cmd.exe", "/c", "start", "/B", "cmd.exe", "/c", kill_cmd],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        logger.info("Scheduled Paint auto-close in {}s (detached)", delay)
+    except Exception as exc:
+        logger.warning("Auto-close Paint failed: {}", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -266,13 +299,10 @@ class WslPaintBackend(PillowCanvasMixin, DrawBackend):
         self._ensure_pillow()
         self._new_canvas()
         path = self._save_canvas()
-        opened = ""
-        if WSL_OPEN_IN_PAINT:
-            self._open_in_windows_paint(path)
-            opened = " Opened in Windows Paint via WSL interop."
+        # Canvas only — open Windows Paint once after add_text_in_paint (final step).
         msg = (
             f"WSL2 backend: canvas {CANVAS_WIDTH}x{CANVAS_HEIGHT} "
-            f"saved to {path}.{opened}"
+            f"ready at {path}."
         )
         logger.success(msg)
         return msg
@@ -310,7 +340,9 @@ class WslPaintBackend(PillowCanvasMixin, DrawBackend):
         ty = TEXT_Y if y is None else y
         self._draw_text(text, tx, ty)
         path = self._save_canvas()
-        self._open_in_windows_paint(path)
+        if WSL_OPEN_IN_PAINT:
+            self._open_in_windows_paint(path)
+            schedule_close_paint()
         msg = f"Added text at ({tx},{ty}): {text!r}. Final image: {path}"
         logger.success(msg)
         return msg
@@ -484,6 +516,7 @@ class WindowsPaintBackend(DrawBackend):
         pyautogui.click(click_x, click_y)
         time.sleep(0.3)
         pyautogui.write(text, interval=0.04)
+        schedule_close_paint()
         msg = f"Added text at ({click_x},{click_y}): {text!r}"
         logger.success(msg)
         return msg
@@ -519,7 +552,7 @@ LOG_DIR = HERE / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 logger.remove()
 logger.add(sys.stderr, level="INFO")
-logger.add(LOG_DIR / "paint_mcp_server.log", rotation="1 MB", retention=10)
+logger.add(LOG_DIR / "paint_mcp_server.log", rotation="1 MB", retention=10, enqueue=False)
 
 mcp = FastMCP("PaintAutomationServer")
 
